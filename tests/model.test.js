@@ -63,3 +63,39 @@ test('firstLine is what a multi-line capture is called in a toast', () => {
   assert.equal(Model.firstLine('  the thought  \nthe detail'), 'the thought')
   assert.equal(Model.lineCount('a\nb\nc'), 3)
 })
+
+// --- panel data ----------------------------------------------------------
+
+test('parseData defaults every field so a half-written cache still renders', () => {
+  const empty = Model.parseData('')
+  assert.deepEqual(empty.bullets, [])
+  assert.deepEqual(empty.tasks, [])
+  assert.equal(empty.space, '')
+  assert.equal(empty.syncedAt, 0)
+})
+
+test('parseData reads the nested today/space shape the CLI writes', () => {
+  const d = Model.parseData(JSON.stringify({
+    syncedAt: 1787290000,
+    space: { title: 'liberato' },
+    today: { id: 'note-1', bullets: [{ id: 'b1', text: 'a thought', depth: 0 }] },
+    tasks: [{ id: 't1', title: 'do it', date: '' }],
+    recent: [{ id: 'r1', title: 'A page', createdAt: '2026-08-20T22:47:49.653Z' }],
+    recentSkipped: ['Meeting']
+  }))
+  assert.equal(d.space, 'liberato')
+  assert.equal(d.noteId, 'note-1')
+  assert.equal(d.bullets[0].text, 'a thought')
+  assert.deepEqual(d.recentSkipped, ['Meeting'])
+})
+
+test('shortAge collapses to what fits on a panel row', () => {
+  const now = Date.parse('2026-08-21T12:00:00Z')
+  assert.equal(Model.shortAge('2026-08-21T11:59:30Z', now), 'now')
+  assert.equal(Model.shortAge('2026-08-21T11:10:00Z', now), '50m')
+  assert.equal(Model.shortAge('2026-08-21T04:00:00Z', now), '8h')
+  assert.equal(Model.shortAge('2026-08-13T12:00:00Z', now), '8d')
+  assert.equal(Model.shortAge('2026-07-01T12:00:00Z', now), '7w')
+  assert.equal(Model.shortAge('', now), '')
+  assert.equal(Model.shortAge('not a date', now), '')
+})

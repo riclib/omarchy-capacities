@@ -53,6 +53,7 @@ STATE_DIR = os.path.join(
 )
 TOKEN_PATH = os.path.join(STATE_DIR, "token")
 OUTBOX_PATH = os.path.join(STATE_DIR, "outbox.json")
+DATA_PATH = os.path.join(STATE_DIR, "data.json")
 CACHE_PATH = os.path.join(STATE_DIR, "cache.json")
 
 # Structures change when you edit the space's types, which is rare, and the
@@ -65,6 +66,16 @@ DEFAULT_CONFIG = {
     "taskTemplate": "- [ ] {text}",
     "searchLimit": 12,
     "openIn": "app",
+    # What the bar panel shows, and what one sync is allowed to cost. The API
+    # gives no ordering and no timestamps in list responses, so "recent" and a
+    # task's open/done state are per-object reads; these caps keep a refresh
+    # inside the 30-requests-per-minute quota with room to spare.
+    "todayBullets": 8,
+    "taskLimit": 8,
+    "recentLimit": 8,
+    "recentStructures": ["Page", "Idea", "Meeting", "Project"],
+    "syncTaskDetails": 10,
+    "syncRecentDetails": 8,
 }
 
 
@@ -283,6 +294,223 @@ def daily_note_id(day=None):
     return found
 
 
+# ------------------------------------------------------------------ panel
+
+
+def block_lines(blocks, depth=0, out=None):
+    """Flatten a block tree into readable lines, deepest last.
+
+    A block's text lives in its tokens; nested blocks hang off `blocks`. Empty
+    blocks are dropped — a daily note is full of them, and they would push the
+    real content off a panel that only shows the last handful.
+    """
+    if out is None:
+        out = []
+    for block in blocks or []:
+        text = "".join(t.get("text") or "" for t in (block.get("tokens") or [])).strip()
+        if text:
+            out.append({"id": block.get("id", ""), "text": text, "depth": depth})
+        block_lines(block.get("blocks") or [], depth + 1, out)
+    return out
+
+
+def object_cache():
+    cache = load_json(CACHE_PATH, {}) or {}
+    return cache, (cache.get("objects") or {})
+
+
+def remember_objects(objects):
+    cache = load_json(CACHE_PATH, {}) or {}
+    cache["objects"] = objects
+    save_json(CACHE_PATH, cache)
+
+
+def object_detail(object_id, known, budget, stale_after=None):
+    """Return cached detail for an object, spending one request only if the
+    budget allows. Returns None when the caller is out of budget — the panel
+    shows what is known and fills in on the next sync."""
+    entry = known.get(object_id)
+    # fetchedAt == 0 means the entry is a placeholder seeded from a listing —
+    # it has a title and nothing else. Treating that as fresh is how "recent"
+    # stayed empty forever: nothing was ever stale enough to fetch.
+    fetched_at = (entry or {}).get("fetchedAt", 0)
+    fresh_enough = bool(entry) and fetched_at > 0 and (
+        stale_after is None or fetched_at + stale_after > time.time()
+    )
+    if fresh_enough:
+        return entry
+    if budget["left"] <= 0:
+        return entry
+    budget["left"] -= 1
+
+    try:
+        obj = request("GET", "/object?id=" + urllib.parse.quote(object_id))
+    except CapacitiesError:
+        # One unreadable object must not fail a whole sync.
+        return entry
+
+    props = obj.get("properties") or {}
+
+    def value(name, kind):
+        holder = (props.get(name) or {}).get(kind)
+        return holder if isinstance(holder, dict) else {}
+
+    detail = {
+        "id": object_id,
+        "title": value("title", "title").get("value") or "",
+        "structureId": obj.get("structureId", ""),
+        "createdAt": value("createdAt", "createdAt").get("value") or "",
+        # A task is open until it has a completion date. The status label is
+        # free text per space, so the date is the portable signal.
+        "completedAt": value("completed", "date").get("start") or "",
+        "date": value("date", "date").get("start") or "",
+        "fetchedAt": int(time.time()),
+    }
+    known[object_id] = detail
+    return detail
+
+
+def list_structure(structure_id, page_size=100):
+    path = "/objects/structure?id=%s&pageSize=%d" % (urllib.parse.quote(structure_id), page_size)
+    return (request("GET", path) or {}).get("results") or []
+
+
+def structure_ids_by_name(names):
+    """Config names structures the way the app does ("Meeting"); the API wants
+    ids. Built-ins keep stable string ids, custom types get UUIDs per space.
+
+    Returns (matched, skipped). A type only reaches `matched` when it actually
+    carries a "Created at" property: without one the API returns no creation
+    time for its objects, so reading them could never place them in Recent —
+    and every read is one of thirty a minute.
+    """
+    wanted = [str(n).strip().lower() for n in names if str(n).strip()]
+    matched, skipped = [], []
+    for structure in structures():
+        title = str(structure.get("title") or "")
+        if title.lower() not in wanted or not structure.get("id"):
+            continue
+        has_created = any(
+            (definition or {}).get("id") == "createdAt"
+            for definition in (structure.get("propertyDefinitions") or [])
+        )
+        (matched if has_created else skipped).append((structure["id"], title))
+    return matched, skipped
+
+
+def cmd_sync(args):
+    cfg = config()
+    previous = load_json(DATA_PATH, {}) or {}
+    if args.max_age and previous.get("syncedAt", 0) + args.max_age > time.time():
+        return 0
+
+    outbox_drain()
+    data = {"syncedAt": int(time.time()), "error": "", "authRequired": False,
+            "space": {}, "today": {"id": "", "bullets": []}, "tasks": [], "recent": []}
+
+    try:
+        data["space"] = space()
+    except CapacitiesError as error:
+        # Nothing else will work either; say so once and keep the old lists so
+        # the panel does not blank out on one failed refresh.
+        data.update({"error": str(error), "authRequired": error.auth_required,
+                     "today": previous.get("today", data["today"]),
+                     "tasks": previous.get("tasks", []),
+                     "recent": previous.get("recent", [])})
+        save_json(DATA_PATH, data, mode=0o644)
+        print(json.dumps({"ok": False, "error": str(error)}))
+        return 2
+
+    _, known = object_cache()
+    budget = {"left": max(0, int(cfg.get("syncTaskDetails", 10)))
+                      + max(0, int(cfg.get("syncRecentDetails", 8)))
+                      + max(0, int(getattr(args, "backfill", 0) or 0))}
+
+    # ---- today's note
+    try:
+        note_id = daily_note_id()
+        note = request("GET", "/object?id=" + urllib.parse.quote(note_id))
+        lines = []
+        for section in (note.get("blocks") or {}).values():
+            lines.extend(block_lines(section))
+        data["today"] = {"id": note_id, "bullets": lines[-max(1, int(cfg.get("todayBullets", 8))):]}
+    except CapacitiesError as error:
+        data["error"] = str(error)
+        data["today"] = previous.get("today", data["today"])
+
+    # ---- tasks: list is titles only, so openness costs one read per task
+    try:
+        summaries = list_structure("RootTask")
+        for summary in summaries:
+            entry = known.get(summary.get("id"))
+            if entry:
+                entry["title"] = summary.get("title") or entry.get("title", "")
+        # Least-recently-checked first, so a big task list still converges.
+        ordered = sorted(summaries, key=lambda s: (known.get(s.get("id"), {}) or {}).get("fetchedAt", 0))
+        open_tasks = []
+        for summary in ordered:
+            detail = object_detail(summary.get("id", ""), known, budget, stale_after=600)
+            if not detail:
+                continue
+            title = detail.get("title") or summary.get("title") or ""
+            if not title.strip() or detail.get("completedAt"):
+                continue
+            open_tasks.append({"id": detail["id"], "title": title, "date": detail.get("date", "")})
+        # Dated work first, then the rest — a deadline is the only ordering
+        # signal the API gives us.
+        open_tasks.sort(key=lambda t: (t["date"] == "", t["date"]))
+        data["tasks"] = open_tasks[: max(1, int(cfg.get("taskLimit", 8)))]
+    except CapacitiesError as error:
+        data["error"] = data["error"] or str(error)
+        data["tasks"] = previous.get("tasks", [])
+
+    # ---- recent: created-at lives on the object, never in a listing
+    try:
+        labels = {s.get("id"): s.get("title") or "" for s in structures()}
+        matched, skipped = structure_ids_by_name(cfg.get("recentStructures") or [])
+        # Named in config but unusable — surfaced so the panel can say why a
+        # type never appears, rather than looking broken.
+        data["recentSkipped"] = sorted({name for _id, name in skipped})
+        # Candidates are scoped to this sync's listings, not to everything the
+        # cache has ever seen: objects of a type without a creation time can
+        # never place here, and spending reads on them is how Recent stayed
+        # empty while the budget drained.
+        candidates = []
+        for structure_id, _name in matched:
+            for summary in list_structure(structure_id):
+                object_id = summary.get("id")
+                if not object_id:
+                    continue
+                candidates.append(object_id)
+                if object_id not in known:
+                    known[object_id] = {
+                        "id": object_id, "title": summary.get("title") or "",
+                        "structureId": summary.get("structureId") or structure_id,
+                        "createdAt": "", "completedAt": "", "date": "", "fetchedAt": 0,
+                    }
+        allowance = max(0, int(cfg.get("syncRecentDetails", 8))) + max(0, int(getattr(args, "backfill", 0) or 0))
+        for object_id in [c for c in candidates if not (known.get(c) or {}).get("createdAt")][:allowance]:
+            object_detail(object_id, known, budget)
+        seen = set(candidates)
+        dated = [o for o in known.values() if o.get("createdAt") and o.get("id") in seen]
+        dated.sort(key=lambda o: o["createdAt"], reverse=True)
+        data["recent"] = [
+            {"id": o["id"], "title": o.get("title") or "Untitled",
+             "structure": labels.get(o.get("structureId"), ""), "createdAt": o["createdAt"]}
+            for o in dated[: max(1, int(cfg.get("recentLimit", 8)))]
+        ]
+    except CapacitiesError as error:
+        data["error"] = data["error"] or str(error)
+        data["recent"] = previous.get("recent", [])
+
+    remember_objects(known)
+    # World-readable on purpose: it holds no credential, and the panel reads it.
+    save_json(DATA_PATH, data, mode=0o644)
+    print(json.dumps({"ok": True, "tasks": len(data["tasks"]), "recent": len(data["recent"]),
+                      "bullets": len(data["today"]["bullets"]), "spent": budget}))
+    return 0
+
+
 def outbox_read():
     value = load_json(OUTBOX_PATH, [])
     return value if isinstance(value, list) else []
@@ -449,11 +677,14 @@ def cmd_search(args):
 
 def cmd_open(args):
     target = space().get("id", "")
+    # A block id deep-links to the line itself, not just the object it is in —
+    # which is the difference between "open today's note" and "show me that."
+    suffix = ("?bid=" + args.block) if getattr(args, "block", "") else ""
     scheme = "web" if args.web or config().get("openIn") == "web" else "app"
     url = (
-        "https://app.capacities.io/%s/%s" % (target, args.object_id)
+        "https://app.capacities.io/%s/%s%s" % (target, args.object_id, suffix)
         if scheme == "web"
-        else "capacities://%s/%s" % (target, args.object_id)
+        else "capacities://%s/%s%s" % (target, args.object_id, suffix)
     )
     subprocess.Popen(
         ["xdg-open", url],
@@ -561,6 +792,7 @@ def main(argv=None):
     opener = sub.add_parser("open", help="open an object")
     opener.add_argument("object_id")
     opener.add_argument("--web", action="store_true")
+    opener.add_argument("--block", default="", help="deep-link to one block inside the object")
     opener.set_defaults(func=cmd_open)
 
     space_cmd = sub.add_parser("space")
@@ -574,6 +806,13 @@ def main(argv=None):
     status = sub.add_parser("status")
     status.add_argument("--refresh", action="store_true")
     status.set_defaults(func=cmd_status)
+
+    sync = sub.add_parser("sync", help="refresh the panel's cache")
+    sync.add_argument("--max-age", type=int, default=0,
+                      help="skip if the cache is younger than this many seconds")
+    sync.add_argument("--backfill", type=int, default=0,
+                      help="extra object reads this run, to warm up Recent (rate limit: 30/min)")
+    sync.set_defaults(func=cmd_sync)
 
     sub.add_parser("drain").set_defaults(func=cmd_drain)
 

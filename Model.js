@@ -70,6 +70,50 @@ function lineCount(text) {
   return String(text || "").split("\n").length
 }
 
+// ---- panel data ----------------------------------------------------------
+
+// The shape bin/omarchy-capacities writes to data.json. Every field is
+// defaulted: a panel that renders half a cache is better than one that throws
+// on a sync that was interrupted mid-write.
+function parseData(raw) {
+  var d = parseJson(raw, {})
+  var today = d.today || {}
+  return {
+    syncedAt: parseInt(d.syncedAt, 10) || 0,
+    error: String(d.error || ""),
+    authRequired: d.authRequired === true,
+    space: String((d.space || {}).title || ""),
+    noteId: String(today.id || ""),
+    bullets: Array.isArray(today.bullets) ? today.bullets : [],
+    tasks: Array.isArray(d.tasks) ? d.tasks : [],
+    recent: Array.isArray(d.recent) ? d.recent : [],
+    recentSkipped: Array.isArray(d.recentSkipped) ? d.recentSkipped : []
+  }
+}
+
+// "3m", "4h", "2d" — a bar panel has no room for a date, and the age is the
+// only part anyone reads at a glance.
+function shortAge(iso, now) {
+  if (!iso) return ""
+  var then = Date.parse(iso)
+  if (isNaN(then)) return ""
+  var seconds = Math.max(0, ((now || Date.now()) - then) / 1000)
+  if (seconds < 90) return "now"
+  var minutes = seconds / 60
+  if (minutes < 60) return Math.round(minutes) + "m"
+  var hours = minutes / 60
+  if (hours < 24) return Math.round(hours) + "h"
+  var days = hours / 24
+  if (days < 14) return Math.round(days) + "d"
+  return Math.round(days / 7) + "w"
+}
+
+function syncedLabel(syncedAt, now) {
+  if (!syncedAt) return "never synced"
+  var age = shortAge(new Date(syncedAt * 1000).toISOString(), now)
+  return age === "now" ? "just synced" : "synced " + age + " ago"
+}
+
 // QML ignores this (module is undefined); node uses it to load the file.
 if (typeof module !== "undefined") {
   module.exports = {
@@ -79,6 +123,9 @@ if (typeof module !== "undefined") {
     clampIndex: clampIndex,
     elide: elide,
     firstLine: firstLine,
-    lineCount: lineCount
+    lineCount: lineCount,
+    parseData: parseData,
+    shortAge: shortAge,
+    syncedLabel: syncedLabel
   }
 }

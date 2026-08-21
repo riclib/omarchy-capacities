@@ -2,11 +2,36 @@
   "schemaVersion": 1,
   "id": "riclib.capacities",
   "name": "Capacities",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Ricardo Liberato",
   "license": "MIT",
   "description": "Capture to today's daily note and search your space — without leaving the desktop",
-  "kinds": ["overlay"],
+  "kinds": [
+    "overlay",
+    "bar-widget"
+  ],
   "keepLoaded": true,
-  "entryPoints": { "overlay": "Capture.qml" }
+  "entryPoints": {
+    "overlay": "Capture.qml",
+    "barWidget": "BarSlot.qml"
+  },
+  "barWidget": {
+    "displayName": "Capacities",
+    "description": "Click to capture to today’s daily note; shows what the outbox is still holding",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showQueued": true
+    },
+    "schema": [
+      {
+        "key": "showQueued",
+        "type": "boolean",
+        "label": "Show queued captures",
+        "description": "Put the number of unsent captures on the bar, in the urgent colour, while any are waiting. They send themselves on the next capture, or with: omarchy-capacities drain",
+        "defaultValue": true
+      }
+    ]
+  }
 }
