@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# capacities-setup — one-time setup, run by the plugin on first load.
+# Writes the default config, puts the CLI on PATH, and adds the Omarchy menu
+# rows. It takes no keybinding: a key is yours to give, so the menu carries an
+# "Add shortcut" row instead (or run capacities-bind-key). Idempotent via
+# ~/.local/state/omarchy/capacities/.setup-done; --force re-runs it.
+set -euo pipefail
+
+SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(dirname "$(dirname "$SCRIPT")")"
+FLAG="$HOME/.local/state/omarchy/capacities/.setup-done"
+MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+CONFIG_DIR="$HOME/.config/omarchy-capacities"
+
+[[ -e $FLAG && ${1:-} != --force ]] && exit 0
+
+notify() { command -v omarchy-notification-send >/dev/null 2>&1 && omarchy-notification-send "$1" "$2" || true; }
+
+mkdir -p "$CONFIG_DIR"
+
+# --- Default config, only if absent ------------------------------------------
+if [[ ! -e "$CONFIG_DIR/config.json" ]]; then
+  cat >"$CONFIG_DIR/config.json" <<'EOF'
+{
+  "template": "{text}",
+  "taskTemplate": "- [ ] {text}",
+  "noTimeStamp": false,
+  "searchLimit": 12,
+  "openIn": "app"
+}
+EOF
+fi
+
+# --- The CLI, on your PATH ---------------------------------------------------
+# A file that isn't our symlink is something you put there, and it stays yours.
+BIN_DIR="${CAPACITIES_BIN_DIR:-$HOME/.local/bin}"
+for cmd in omarchy-capacities capacities-bind-key; do
+  if [[ -e $BIN_DIR/$cmd && ! -L $BIN_DIR/$cmd ]]; then
+    echo "capacities: $BIN_DIR/$cmd is not our symlink — left it alone"
+  elif ! { mkdir -p "$BIN_DIR" && ln -sfn "$PLUGIN_DIR/bin/$cmd" "$BIN_DIR/$cmd"; } 2>/dev/null; then
+    notify "Capacities" "Couldn't put $cmd on your PATH — $BIN_DIR isn't writable"
+  fi
+done
+
+# --- Menu rows, only if absent -----------------------------------------------
+if ! grep -q '>>> capacities menu >>>' "$MENU" 2>/dev/null; then
+  mkdir -p "$(dirname "$MENU")"
+  [[ -s $MENU ]] || printf '{\n}\n' >"$MENU"
+  blocktmp="$(mktemp)"; tmp="$(mktemp)"
+  trap 'rm -f "$blocktmp" "$tmp"' EXIT
+  cat >"$blocktmp" <<EOF
+  // >>> capacities menu >>>  Added once by Capacities setup — yours to edit or remove.
+  "trigger.capacities": { "icon": "󰔏", "label": "Capacities" },
+  "trigger.capacities.capture": { "icon": "󰏫", "label": "Capture", "action": "omarchy-shell shell toggle riclib.capacities '{}'" },
+  "trigger.capacities.search": { "icon": "󰅉", "label": "Search space", "action": "omarchy-shell riclib.capacities search" },
+  "trigger.capacities.link": { "icon": "󰌷", "label": "Save clipboard link", "action": "$PLUGIN_DIR/bin/omarchy-capacities link" },
+  "trigger.capacities.app": { "icon": "󰏆", "label": "Open Capacities", "action": "uwsm app -- capacities" },
+  "trigger.capacities.bind-key": { "icon": "󰌌", "label": "Add capture shortcut", "action": "$PLUGIN_DIR/bin/capacities-bind-key", "when": "! grep -q '>>> capacities >>>' ~/.config/hypr/bindings.lua" },
+  // <<< capacities menu <<<
+EOF
+  # Insert before the file's closing brace, adding a comma to the preceding
+  # entry if it lacks one. A file with no closing brace on a line of its own is
+  # one we don't understand: say so and carry on rather than dying here and
+  # leaving setup half-done forever.
+  if awk -v blockfile="$blocktmp" '
+    { lines[NR] = $0 }
+    END {
+      last = 0
+      for (i = 1; i <= NR; i++) if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) last = i
+      if (last == 0) exit 3
+      for (j = last - 1; j >= 1; j--) {
+        t = lines[j]
+        sub(/[[:space:]]+$/, "", t)
+        if (t == "" || t ~ /^[[:space:]]*\/\//) continue
+        if (t !~ /[,{[]$/) lines[j] = lines[j] ","
+        break
+      }
+      for (i = 1; i <= NR; i++) {
+        if (i == last) while ((getline line < blockfile) > 0) print line
+        print lines[i]
+      }
+    }
+  ' "$MENU" >"$tmp"; then
+    mv "$tmp" "$MENU"
+  else
+    notify "Capacities" "Couldn't add menu entries — add them by hand (see README)"
+  fi
+fi
+
+mkdir -p "$(dirname "$FLAG")"
+touch "$FLAG"
+
+if "$PLUGIN_DIR/bin/omarchy-capacities" status | grep -q '"token": true'; then
+  notify "Capacities is ready" "Capture and Search are in the Omarchy menu. No key was taken — add one from the menu when you want it."
+else
+  notify "Capacities needs a token" "Settings → Capacities API in the app, then: omarchy-capacities login --token cap-api-…"
+fi

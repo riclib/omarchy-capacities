@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "riclib.capacities",
+  "name": "Capacities",
+  "version": "0.1.0",
+  "author": "Ricardo Liberato",
+  "license": "MIT",
+  "description": "Capture to today's daily note and search your space — without leaving the desktop",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": { "overlay": "Capture.qml" }
+}

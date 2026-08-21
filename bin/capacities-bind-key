@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# capacities-bind-key — add the capture (and search) shortcuts to Hyprland.
+# Usage: capacities-bind-key [CAPTURE_KEY] [SEARCH_KEY]
+# Writes one marked block to ~/.config/hypr/bindings.lua, and refuses to touch
+# a key that is already bound to something else.
+set -euo pipefail
+
+BINDINGS="$HOME/.config/hypr/bindings.lua"
+CAPTURE_KEY="${1:-SUPER + N}"
+SEARCH_KEY="${2:-SUPER + SHIFT + N}"
+
+notify() { command -v omarchy-notification-send >/dev/null 2>&1 && omarchy-notification-send "$1" "$2" || true; }
+
+if grep -q '>>> capacities >>>' "$BINDINGS" 2>/dev/null; then
+  notify "Capacities" "The shortcut is already in your bindings."
+  exit 0
+fi
+
+for key in "$CAPTURE_KEY" "$SEARCH_KEY"; do
+  if grep -qF "\"$key\"" "$BINDINGS" 2>/dev/null; then
+    notify "Capacities" "$key is already bound — pick another: capacities-bind-key \"SUPER + J\""
+    exit 1
+  fi
+done
+
+cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+cat >>"$BINDINGS" <<EOF
+
+-- >>> capacities >>>  Added by Capacities — yours to edit or remove.
+o.bind("$CAPTURE_KEY", "Capture to Capacities", "omarchy-shell shell toggle riclib.capacities '{}'")
+o.bind("$SEARCH_KEY", "Search Capacities", "omarchy-shell riclib.capacities search")
+-- <<< capacities <<<
+EOF
+
+hyprctl reload >/dev/null 2>&1 || true
+notify "Capacities" "$CAPTURE_KEY captures, $SEARCH_KEY searches."

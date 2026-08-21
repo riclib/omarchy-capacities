@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""Capacities API client for the Omarchy shell plugin.
+
+Why a CLI and not XMLHttpRequest from QML: the API token is a long-lived
+credential that belongs in a 0600 file rather than in the shell's process
+state, a capture that fails has to survive somewhere the shell does not
+(the outbox), and the space's structure list wants an on-disk cache so a
+search does not spend one of its ten-per-minute lookups relabelling rows.
+All three are miserable in QML and ordinary in Python. The shell only ever
+runs this and parses its JSON.
+
+The endpoints are Capacities' documented v1 API (https://api.capacities.io),
+whose per-endpoint quotas are small — 10/60s for space reads, 30/60s for
+search and daily-note appends. Nothing here polls.
+
+Commands:
+  capture TEXT          append to today's daily note
+  link [URL]            save a URL as a weblink object (clipboard by default)
+  search QUERY          search objects by title, as JSON
+  open OBJECT_ID        open an object in the desktop app
+  space | structures    cached space metadata
+  status                token, space and outbox summary, as JSON
+  drain                 retry everything the outbox is holding
+  login --token TOKEN   store the API token
+  logout                forget it
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+API = os.environ.get("CAPACITIES_API", "https://api.capacities.io")
+
+CONFIG_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "omarchy-capacities",
+)
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "omarchy",
+    "capacities",
+)
+TOKEN_PATH = os.path.join(STATE_DIR, "token")
+OUTBOX_PATH = os.path.join(STATE_DIR, "outbox.json")
+CACHE_PATH = os.path.join(STATE_DIR, "cache.json")
+
+# Structures change when you edit the space's types, which is rare, and the
+# endpoint that serves them is on the tightest quota of the lot (10/60s).
+CACHE_TTL = 12 * 3600
+
+DEFAULT_CONFIG = {
+    "template": "{text}",
+    "noTimeStamp": False,
+    "taskTemplate": "- [ ] {text}",
+    "searchLimit": 12,
+    "openIn": "app",
+}
+
+
+class CapacitiesError(RuntimeError):
+    """Anything that should reach the user as a message rather than a stack."""
+
+    def __init__(self, message, status=None, transient=False, auth_required=False):
+        super().__init__(message)
+        self.status = status
+        # Transient means the request never got a verdict — the network was
+        # down, or the API asked us to slow down. Those are worth keeping.
+        # A rejection is not: replaying it just gets rejected again.
+        self.transient = transient
+        self.auth_required = auth_required
+
+
+# ---------------------------------------------------------------- plumbing
+
+
+def load_json(path, fallback):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return fallback
+
+
+def save_json(path, value, mode=0o600):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2)
+        handle.write("\n")
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def config():
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(load_json(CONFIG_PATH, {}) or {})
+    return merged
+
+
+def notify(title, body):
+    # The body goes out with a leading space on purpose: the notification
+    # helper only takes a body positionally when it doesn't look like an
+    # option, so a capture starting with "-" would be swallowed into option
+    # passthrough and the toast lost — the one trace a failed capture leaves.
+    try:
+        subprocess.run(
+            ["omarchy-notification-send", title, " " + body],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
+
+
+def token():
+    from_env = os.environ.get("CAPACITIES_TOKEN", "").strip()
+    if from_env:
+        return from_env
+    try:
+        with open(TOKEN_PATH, "r", encoding="utf-8") as handle:
+            stored = handle.read().strip()
+    except OSError:
+        stored = ""
+    if not stored:
+        raise CapacitiesError(
+            "No API token. Generate one in Capacities (Settings → Capacities API) "
+            "and run: omarchy-capacities login --token cap-api-…",
+            auth_required=True,
+        )
+    return stored
+
+
+def request(method, path, body=None, timeout=20):
+    payload = None
+    headers = {
+        "Authorization": "Bearer " + token(),
+        "Accept": "application/json",
+        "User-Agent": "omarchy-capacities/0.1",
+    }
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(API + path, data=payload, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8") or "{}"
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as error:
+        raw = ""
+        try:
+            raw = error.read().decode("utf-8")
+        except Exception:  # noqa: BLE001 - the body is a nicety, not the verdict
+            pass
+        detail = ""
+        try:
+            parsed = json.loads(raw)
+            detail = parsed.get("message") or parsed.get("code") or ""
+        except ValueError:
+            detail = raw[:200]
+
+        if error.code == 429:
+            reset = error.headers.get("ratelimit") or ""
+            raise CapacitiesError(
+                "Capacities is rate limiting this endpoint. " + reset,
+                status=429,
+                transient=True,
+            )
+        if error.code in (401, 403):
+            raise CapacitiesError(
+                detail or "Capacities rejected the token.",
+                status=error.code,
+                auth_required=error.code == 401,
+            )
+        # A server-side fault says nothing about the request, so it is worth
+        # sending again later; a 4xx is a verdict and is not.
+        raise CapacitiesError(
+            detail or ("HTTP " + str(error.code)),
+            status=error.code,
+            transient=error.code >= 500,
+        )
+    except urllib.error.URLError as error:
+        raise CapacitiesError("Capacities is unreachable: %s" % error.reason, transient=True)
+    except TimeoutError:
+        raise CapacitiesError("Capacities timed out.", transient=True)
+    except ValueError as error:
+        raise CapacitiesError("Capacities sent something unparseable: %s" % error)
+
+
+# ------------------------------------------------------------------- cache
+
+
+def cache_get(key, fetch, refresh=False):
+    cache = load_json(CACHE_PATH, {}) or {}
+    entry = cache.get(key) or {}
+    fresh = entry.get("at", 0) + CACHE_TTL > time.time()
+    if entry.get("value") is not None and fresh and not refresh:
+        return entry["value"]
+    value = fetch()
+    cache[key] = {"at": int(time.time()), "value": value}
+    save_json(CACHE_PATH, cache)
+    return value
+
+
+def space(refresh=False):
+    return cache_get("space", lambda: request("GET", "/space"), refresh)
+
+
+def structures(refresh=False):
+    fetched = cache_get("structures", lambda: request("GET", "/space/structures"), refresh)
+    return fetched.get("structures", []) if isinstance(fetched, dict) else (fetched or [])
+
+
+def structure_labels():
+    try:
+        return {s.get("id"): s.get("title") or "" for s in structures()}
+    except CapacitiesError:
+        # A label is decoration; never let it fail a search that succeeded.
+        return {}
+
+
+# ------------------------------------------------------------------ outbox
+
+
+def outbox_read():
+    value = load_json(OUTBOX_PATH, [])
+    return value if isinstance(value, list) else []
+
+
+def outbox_add(entry):
+    queued = outbox_read()
+    queued.append(entry)
+    # A runaway outbox is worse than a lost capture nobody can find: keep the
+    # most recent, which is what the person still remembers writing.
+    save_json(OUTBOX_PATH, queued[-200:])
+
+
+def outbox_drain(quiet=True):
+    """Send what the outbox holds, oldest first. Stops at the first entry that
+    fails transiently, so a rate limit doesn't burn the whole queue against a
+    closed door."""
+    queued = outbox_read()
+    if not queued:
+        return 0, 0
+
+    sent, remaining = 0, []
+    for index, entry in enumerate(queued):
+        if remaining:  # already stopped; keep the rest untouched
+            remaining.append(entry)
+            continue
+        try:
+            request("POST", entry["path"], entry["body"])
+            sent += 1
+        except CapacitiesError as error:
+            if error.transient:
+                remaining.extend(queued[index:])
+            elif not quiet:
+                notify("Capacities dropped a queued capture", str(error))
+        # A permanent rejection is dropped: replaying it just gets rejected.
+
+    save_json(OUTBOX_PATH, remaining)
+    return sent, len(remaining)
+
+
+def send_or_queue(path, body, description):
+    """The write path for anything a person typed: try it, and if the failure
+    was the network's fault rather than the request's, keep it."""
+    outbox_drain()
+    try:
+        return request("POST", path, body)
+    except CapacitiesError as error:
+        if error.transient:
+            outbox_add({"path": path, "body": body, "at": int(time.time())})
+            notify("Capacities is offline — queued", description)
+            return None
+        notify("Capacities couldn't save that", str(error))
+        raise
+
+
+# ---------------------------------------------------------------- commands
+
+
+def render(template, text):
+    """Template goes through strftime first; {text} is substituted afterwards,
+    so a % in what was typed is never eaten by the date codes."""
+    stamped = datetime.now().strftime(template)
+    if "{text}" in stamped:
+        return stamped.replace("{text}", text)
+    return (stamped + " " + text).strip()
+
+
+def cmd_capture(args):
+    text = "\n".join(args.text) if args.text else sys.stdin.read()
+    text = text.strip("\n").strip()
+    if not text:
+        return 0
+
+    cfg = config()
+    template = cfg["taskTemplate"] if args.task else cfg["template"]
+    markdown = render(template, text)
+
+    body = {"markdown": markdown}
+    if cfg.get("noTimeStamp"):
+        body["noTimeStamp"] = True
+
+    result = send_or_queue("/blocks/daily-note/append", body, text)
+    if result is not None and not args.quiet:
+        notify("Captured to Capacities", text.split("\n")[0][:120])
+    return 0
+
+
+def clipboard_url():
+    try:
+        value = subprocess.run(
+            ["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return value if value.startswith(("http://", "https://")) else ""
+
+
+def cmd_link(args):
+    url = args.url or clipboard_url()
+    if not url:
+        raise CapacitiesError("No URL given, and the clipboard doesn't hold one.")
+    if not url.startswith(("http://", "https://")):
+        raise CapacitiesError("Not a URL: " + url[:80])
+
+    body = {"url": url}
+    if args.note:
+        body["markdown"] = args.note
+
+    result = send_or_queue("/object/url", body, url)
+    if result is not None:
+        title = ""
+        if isinstance(result, dict):
+            props = result.get("properties") or {}
+            title_prop = props.get("title") or {}
+            title = (title_prop.get("title") or {}).get("value") or result.get("title") or ""
+        notify("Saved to Capacities", title or url)
+        print(json.dumps(result))
+    return 0
+
+
+def cmd_search(args):
+    query = " ".join(args.query).strip()
+    if not query:
+        print(json.dumps({"results": []}))
+        return 0
+
+    body = {"query": query[:512]}
+    if args.structures:
+        body["structureIds"] = [s for s in args.structures.split(",") if s]
+
+    payload = request("POST", "/objects/search", body)
+    labels = structure_labels()
+    space_id = (space() or {}).get("id", "")
+
+    results = []
+    for item in (payload.get("results") or [])[: args.limit]:
+        object_id = item.get("id", "")
+        results.append(
+            {
+                "id": object_id,
+                "title": item.get("title") or "Untitled",
+                "structureId": item.get("structureId", ""),
+                "structure": labels.get(item.get("structureId"), ""),
+                "app": "capacities://%s/%s" % (space_id, object_id),
+                "web": "https://app.capacities.io/%s/%s" % (space_id, object_id),
+            }
+        )
+    print(json.dumps({"query": query, "results": results}))
+    return 0
+
+
+def cmd_open(args):
+    target = space().get("id", "")
+    scheme = "web" if args.web or config().get("openIn") == "web" else "app"
+    url = (
+        "https://app.capacities.io/%s/%s" % (target, args.object_id)
+        if scheme == "web"
+        else "capacities://%s/%s" % (target, args.object_id)
+    )
+    subprocess.Popen(
+        ["xdg-open", url],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return 0
+
+
+def cmd_space(args):
+    print(json.dumps(space(refresh=args.refresh)))
+    return 0
+
+
+def cmd_structures(args):
+    print(json.dumps({"structures": structures(refresh=args.refresh)}))
+    return 0
+
+
+def cmd_status(args):
+    queued = len(outbox_read())
+    state = {"queued": queued, "token": False, "space": None, "error": ""}
+    try:
+        token()
+        state["token"] = True
+        state["space"] = space(refresh=args.refresh)
+    except CapacitiesError as error:
+        state["error"] = str(error)
+        state["authRequired"] = error.auth_required
+    print(json.dumps(state))
+    return 0
+
+
+def cmd_drain(args):
+    sent, remaining = outbox_drain(quiet=False)
+    print(json.dumps({"sent": sent, "queued": remaining}))
+    return 0
+
+
+def cmd_login(args):
+    value = args.token
+    if args.token_file:
+        # The shell writes the pasted token to a file rather than passing it
+        # in argv, where it would be readable in /proc for the life of the call.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if os.path.exists(args.token_file):
+                with open(args.token_file, "r", encoding="utf-8") as handle:
+                    value = handle.read().strip()
+                break
+            time.sleep(0.1)
+        try:
+            os.unlink(args.token_file)
+        except OSError:
+            pass
+    if not value:
+        raise CapacitiesError("No token given.")
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = TOKEN_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(value.strip() + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, TOKEN_PATH)
+
+    # Prove it before claiming success, and warm the cache while we are here.
+    info = space(refresh=True)
+    notify("Capacities connected", info.get("title", ""))
+    print(json.dumps(info))
+    return 0
+
+
+def cmd_logout(args):
+    for path in (TOKEN_PATH, CACHE_PATH):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    print(json.dumps({"ok": True}))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="omarchy-capacities", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    capture = sub.add_parser("capture", help="append to today's daily note")
+    capture.add_argument("text", nargs="*")
+    capture.add_argument("--task", action="store_true", help="use the task template")
+    capture.add_argument("--quiet", action="store_true", help="no success toast")
+    capture.set_defaults(func=cmd_capture)
+
+    link = sub.add_parser("link", help="save a URL as a weblink")
+    link.add_argument("url", nargs="?")
+    link.add_argument("--note", default="")
+    link.set_defaults(func=cmd_link)
+
+    search = sub.add_parser("search", help="search objects by title")
+    search.add_argument("query", nargs="+")
+    search.add_argument("--limit", type=int, default=config().get("searchLimit", 12))
+    search.add_argument("--structures", default="", help="comma-separated structure ids")
+    search.set_defaults(func=cmd_search)
+
+    opener = sub.add_parser("open", help="open an object")
+    opener.add_argument("object_id")
+    opener.add_argument("--web", action="store_true")
+    opener.set_defaults(func=cmd_open)
+
+    space_cmd = sub.add_parser("space")
+    space_cmd.add_argument("--refresh", action="store_true")
+    space_cmd.set_defaults(func=cmd_space)
+
+    structures_cmd = sub.add_parser("structures")
+    structures_cmd.add_argument("--refresh", action="store_true")
+    structures_cmd.set_defaults(func=cmd_structures)
+
+    status = sub.add_parser("status")
+    status.add_argument("--refresh", action="store_true")
+    status.set_defaults(func=cmd_status)
+
+    sub.add_parser("drain").set_defaults(func=cmd_drain)
+
+    login = sub.add_parser("login")
+    login.add_argument("--token", default="")
+    login.add_argument("--token-file", default="")
+    login.set_defaults(func=cmd_login)
+
+    sub.add_parser("logout").set_defaults(func=cmd_logout)
+
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except CapacitiesError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
