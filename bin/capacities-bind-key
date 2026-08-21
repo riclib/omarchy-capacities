@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# capacities-bind-key — add the capture (and search) shortcuts to Hyprland.
-# Usage: capacities-bind-key [CAPTURE_KEY] [SEARCH_KEY]
+# capacities-bind-key — add the Capacities shortcuts to Hyprland.
+# Usage: capacities-bind-key [CAPTURE_KEY] [PEEK_KEY] [APP_KEY]
+#
+# One letter, three depths: type into the day, look at it, or leave for the
+# app. Search gets no key of its own — it is Tab away from capture, "s" in the
+# peek, and the lamp's right click.
+#
 # Writes one marked block to ~/.config/hypr/bindings.lua, and refuses to touch
 # a key that is already bound to something else.
 set -euo pipefail
 
 BINDINGS="$HOME/.config/hypr/bindings.lua"
-CAPTURE_KEY="${1:-SUPER + N}"
-SEARCH_KEY="${2:-SUPER + SHIFT + N}"
+CAPTURE_KEY="${1:-SUPER + M}"
+PEEK_KEY="${2:-SUPER + SHIFT + M}"
+APP_KEY="${3:-SUPER + CTRL + M}"
 
 notify() { command -v omarchy-notification-send >/dev/null 2>&1 && omarchy-notification-send "$1" "$2" || true; }
 
 if grep -q '>>> capacities >>>' "$BINDINGS" 2>/dev/null; then
-  notify "Capacities" "The shortcut is already in your bindings."
+  notify "Capacities" "The shortcuts are already in your bindings."
   exit 0
 fi
 
-for key in "$CAPTURE_KEY" "$SEARCH_KEY"; do
+for key in "$CAPTURE_KEY" "$PEEK_KEY" "$APP_KEY"; do
   if grep -qF "\"$key\"" "$BINDINGS" 2>/dev/null; then
-    notify "Capacities" "$key is already bound — pick another: capacities-bind-key \"SUPER + J\""
+    notify "Capacities" "$key is already bound — pick your own: capacities-bind-key \"SUPER + J\" \"SUPER + SHIFT + J\" \"SUPER + CTRL + J\""
     exit 1
   fi
 done
@@ -27,10 +33,16 @@ cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
 cat >>"$BINDINGS" <<EOF
 
 -- >>> capacities >>>  Added by Capacities — yours to edit or remove.
+-- One letter, three depths: type into the day, look at it, leave for the app.
+-- Search has no key: it is Tab from capture, "s" in the peek, right click on
+-- the bar lamp.
 o.bind("$CAPTURE_KEY", "Capture to Capacities", "omarchy-shell shell toggle riclib.capacities '{}'")
-o.bind("$SEARCH_KEY", "Search Capacities", "omarchy-shell riclib.capacities search")
+o.bind("$PEEK_KEY", "Peek at Capacities", "omarchy-shell riclib.capacities.bar toggle")
+-- launch-or-focus, not a plain launch: the app is usually already running, and
+-- starting a second process leaves its window exactly where it was.
+o.bind("$APP_KEY", "Open Capacities", "omarchy launch or focus io.capacities.app 'uwsm app -- capacities'")
 -- <<< capacities <<<
 EOF
 
 hyprctl reload >/dev/null 2>&1 || true
-notify "Capacities" "$CAPTURE_KEY captures, $SEARCH_KEY searches."
+notify "Capacities" "$CAPTURE_KEY captures, $PEEK_KEY peeks, $APP_KEY opens the app."

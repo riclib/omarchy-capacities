@@ -28,13 +28,25 @@ puts `omarchy-capacities` on your PATH, and adds a **Capacities** section to
 the Omarchy menu under *Trigger*. It takes no keybinding — a key is yours to
 give:
 
-    capacities-bind-key                        # SUPER+N captures, SUPER+SHIFT+N searches
-    capacities-bind-key "SUPER + J" "SUPER + K"
+    capacities-bind-key
+    capacities-bind-key "SUPER + J" "SUPER + SHIFT + J" "SUPER + CTRL + J"
 
-Or write it yourself in `~/.config/hypr/bindings.lua`:
+That is one letter at three depths:
 
-    o.bind("SUPER + N", "Capture", "omarchy-shell shell toggle riclib.capacities '{}'")
-    o.bind("SUPER + SHIFT + N", "Search", "omarchy-shell riclib.capacities search")
+| Key | |
+| --- | --- |
+| <kbd>SUPER</kbd>+<kbd>M</kbd> | type into the day |
+| <kbd>SUPER</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> | peek at it — the panel |
+| <kbd>SUPER</kbd>+<kbd>Ctrl</kbd>+<kbd>M</kbd> | leave for the app |
+
+Search gets no key of its own: it is <kbd>Tab</kbd> away from capture,
+<kbd>s</kbd> in the peek, and the lamp's right click.
+
+Or write them yourself in `~/.config/hypr/bindings.lua`:
+
+    o.bind("SUPER + M", "Capture", "omarchy-shell shell toggle riclib.capacities '{}'")
+    o.bind("SUPER + SHIFT + M", "Peek", "omarchy-shell riclib.capacities.bar toggle")
+    o.bind("SUPER + CTRL + M", "Open Capacities", "omarchy launch or focus io.capacities.app 'uwsm app -- capacities'")
 
 ## Usage
 

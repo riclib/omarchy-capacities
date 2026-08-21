@@ -53,7 +53,7 @@ if ! grep -q '>>> capacities menu >>>' "$MENU" 2>/dev/null; then
   "trigger.capacities.capture": { "icon": "󰏫", "label": "Capture", "action": "omarchy-shell shell toggle riclib.capacities '{}'" },
   "trigger.capacities.search": { "icon": "󰅉", "label": "Search space", "action": "omarchy-shell riclib.capacities search" },
   "trigger.capacities.link": { "icon": "󰌷", "label": "Save clipboard link", "action": "$PLUGIN_DIR/bin/omarchy-capacities link" },
-  "trigger.capacities.app": { "icon": "󰏆", "label": "Open Capacities", "action": "uwsm app -- capacities" },
+  "trigger.capacities.app": { "icon": "󰏆", "label": "Open Capacities", "action": "omarchy launch or focus io.capacities.app \'uwsm app -- capacities\'" },
   "trigger.capacities.bind-key": { "icon": "󰌌", "label": "Add capture shortcut", "action": "$PLUGIN_DIR/bin/capacities-bind-key", "when": "! grep -q '>>> capacities >>>' ~/.config/hypr/bindings.lua" },
   // <<< capacities menu <<<
 EOF

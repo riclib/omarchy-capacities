@@ -112,14 +112,32 @@ BarWidget {
     }
   }
 
+  // An IPC target routes to exactly one handler, but this widget is live once
+  // per monitor, so the instance that claimed the target is rarely the one you
+  // are looking at — a keybinding would open the panel on whichever screen the
+  // shell happened to register first. The bar already resolves this for its own
+  // summons by asking Hyprland which output is focused; borrow that rather than
+  // acting locally.
+  function focusedInstance() {
+    if (root.bar && typeof root.bar.findPanelWidget === "function") {
+      var item = root.bar.findPanelWidget(root.moduleName)
+      if (item) return item
+    }
+    return root
+  }
+
   IpcHandler {
     target: "riclib.capacities.bar"
 
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function toggle(): void { root.togglePanel() }
-    function sync(): void {
-      if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh(true)
-    }
+    function open(): void { root.focusedInstance().open() }
+    function close(): void { root.focusedInstance().close() }
+    function toggle(): void { root.focusedInstance().togglePanel() }
+
+    // A refresh is not a place, so it goes to every instance.
+    function sync(): void { root.broadcast("refreshPanel") }
+  }
+
+  function refreshPanel() {
+    if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh(true)
   }
 }
