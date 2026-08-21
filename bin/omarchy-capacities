@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -59,8 +60,8 @@ CACHE_PATH = os.path.join(STATE_DIR, "cache.json")
 CACHE_TTL = 12 * 3600
 
 DEFAULT_CONFIG = {
-    "template": "{text}",
-    "noTimeStamp": False,
+    # A capture is a bullet in the day's list, not a paragraph under a clock.
+    "template": "- {text}",
     "taskTemplate": "- [ ] {text}",
     "searchLimit": 12,
     "openIn": "app",
@@ -233,6 +234,55 @@ def structure_labels():
 # ------------------------------------------------------------------ outbox
 
 
+def daily_note_id(day=None):
+    """The object id of a day's daily note.
+
+    Capacities has a dedicated append endpoint for daily notes, and it is
+    currently a black hole: it answers 200 with an empty body and the content
+    never lands (verified 2026-08-21 against two different days, while
+    /blocks/append to an ordinary object worked in the same minute). So this
+    resolves the note itself and appends to it like any other object.
+
+    The id is cached per day — the listing endpoint is on the 30/60s quota and
+    a day's note does not change id once it exists.
+    """
+    stamp = (day or datetime.now()).strftime("%Y-%m-%d")
+    cache = load_json(CACHE_PATH, {}) or {}
+    entry = (cache.get("dailyNotes") or {}).get(stamp)
+    if entry:
+        return entry
+
+    found = ""
+    cursor = None
+    # The listing is not ordered by date, so the day is matched by title —
+    # daily notes are titled with an ISO timestamp at UTC midnight.
+    while True:
+        path = "/objects/structure?id=RootDailyNote&pageSize=100"
+        if cursor:
+            path += "&cursor=" + urllib.parse.quote(cursor)
+        page = request("GET", path)
+        for item in page.get("results") or []:
+            if str(item.get("title") or "").startswith(stamp):
+                found = item.get("id") or ""
+                break
+        cursor = page.get("nextCursor")
+        if found or not cursor:
+            break
+
+    if not found:
+        # No note for the day yet. Capacities makes one when the app opens the
+        # day; there is no documented way to create it from the API, so the
+        # capture is queued rather than dropped and lands once the note exists.
+        raise CapacitiesError(
+            "No daily note exists for %s yet — open Capacities once to create it." % stamp,
+            transient=True,
+        )
+
+    cache.setdefault("dailyNotes", {})[stamp] = found
+    save_json(CACHE_PATH, cache)
+    return found
+
+
 def outbox_read():
     value = load_json(OUTBOX_PATH, [])
     return value if isinstance(value, list) else []
@@ -260,7 +310,14 @@ def outbox_drain(quiet=True):
             remaining.append(entry)
             continue
         try:
-            request("POST", entry["path"], entry["body"])
+            path, body = entry.get("path") or "", dict(entry.get("body") or {})
+            if not path:
+                # A capture queued before its daily note could be resolved.
+                # It belongs to the day it was written, not the day it drains.
+                when = datetime.fromtimestamp(entry.get("at") or time.time())
+                body["id"] = daily_note_id(when)
+                path = "/blocks/append"
+            request("POST", path, body)
             sent += 1
         except CapacitiesError as error:
             if error.transient:
@@ -310,11 +367,17 @@ def cmd_capture(args):
     template = cfg["taskTemplate"] if args.task else cfg["template"]
     markdown = render(template, text)
 
-    body = {"markdown": markdown}
-    if cfg.get("noTimeStamp"):
-        body["noTimeStamp"] = True
+    try:
+        target = daily_note_id()
+    except CapacitiesError as error:
+        if not error.transient:
+            notify("Capacities couldn't save that", str(error))
+            raise
+        outbox_add({"path": "", "body": {"markdown": markdown}, "at": int(time.time())})
+        notify("Capacities is offline — queued", text)
+        return 0
 
-    result = send_or_queue("/blocks/daily-note/append", body, text)
+    result = send_or_queue("/blocks/append", {"id": target, "markdown": markdown}, text)
     if result is not None and not args.quiet:
         notify("Captured to Capacities", text.split("\n")[0][:120])
     return 0

@@ -22,9 +22,8 @@ mkdir -p "$CONFIG_DIR"
 if [[ ! -e "$CONFIG_DIR/config.json" ]]; then
   cat >"$CONFIG_DIR/config.json" <<'EOF'
 {
-  "template": "{text}",
+  "template": "- {text}",
   "taskTemplate": "- [ ] {text}",
-  "noTimeStamp": false,
   "searchLimit": 12,
   "openIn": "app"
 }

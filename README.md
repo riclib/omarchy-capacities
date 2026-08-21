@@ -1,5 +1,7 @@
 # Capacities for Omarchy
 
+![The capture overlay](preview.png)
+
 **A thought, a key, Enter — it's in today's daily note. Or ask the space a
 question and land in the object.**
 
@@ -76,17 +78,17 @@ overlay's footer shows the depth while anything is waiting. A request the API
 `~/.config/omarchy-capacities/config.json`:
 
     {
-      "template": "{text}",
+      "template": "- {text}",
       "taskTemplate": "- [ ] {text}",
-      "noTimeStamp": false,
       "searchLimit": 12,
       "openIn": "app"
     }
 
 `template` is the markdown a capture becomes. `{text}` is what you typed;
-everything else goes through `strftime`, so `"%H:%M — {text}"` works. Capacities
-adds its own timestamp heading to daily-note appends; set `noTimeStamp` to
-`true` if you'd rather stamp it yourself in the template.
+everything else goes through `strftime`, so `"- %H:%M {text}"` works.
+
+Captures land as plain bullets. Put the clock back with
+`"template": "- %H:%M {text}"` if you want one.
 
 `openIn` is `app` or `web` — whether a picked result opens in the desktop app
 (`capacities://…`) or the browser.
@@ -98,6 +100,19 @@ adds its own timestamp heading to daily-note appends; set `noTimeStamp` to
     bin/omarchy-capacities   the API client: token, outbox, structure cache
     bin/capacities-setup     first-load setup — config, menu rows, PATH
     bin/capacities-bind-key  the shortcut, when you ask for it
+
+### The daily-note endpoint
+
+Captures are appended to today's daily note object with `POST /blocks/append`,
+not with Capacities' dedicated `POST /blocks/daily-note/append`. The dedicated
+one answers `200` with an empty body and the content never arrives — reproduced
+on 2026-08-21 against two different days, in the same minute that
+`/blocks/append` to an ordinary object worked. So this resolves the day's note
+by title (cached per day) and appends to it like any other object. If that
+endpoint starts working, the resolve step is what to delete.
+
+A day whose note does not exist yet is queued rather than dropped: Capacities
+creates the note when the app opens the day, and the queued capture lands then.
 
 The QML never talks to the API. The token belongs in a 0600 file rather than in
 the shell's process state, a failed capture belongs in a queue on disk, and the
