@@ -1,6 +1,6 @@
 # Capacities for Omarchy
 
-![The capture overlay](preview.png)
+![The peek panel: today's captures, open tasks, recently created](preview.png)
 
 **A thought, a key, Enter — it's in today's daily note. Or ask the space a
 question and land in the object.**
@@ -55,6 +55,8 @@ Or write them yourself in `~/.config/hypr/bindings.lua`:
     o.bind("SUPER + CTRL + M", "Open Capacities", "omarchy launch or focus io.capacities.app 'uwsm app -- capacities'")
 
 ## Usage
+
+![The capture overlay](capture.png)
 
 | Key | Capture mode | Search mode |
 | --- | --- | --- |
