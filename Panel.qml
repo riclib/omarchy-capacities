@@ -265,8 +265,12 @@ Panel {
         Text {
           visible: root.cache.recentSkipped.length > 0
           width: parent.width
+          // The type list is cached for twelve hours, so enabling the property
+          // is only half of it — say the other half rather than letting it
+          // look like the change did nothing.
           text: "No creation time on: " + root.cache.recentSkipped.join(", ")
-            + " — enable Created at on the type in Capacities to include them."
+            + " — enable Created at in the type's settings in Capacities, then run"
+            + "  omarchy-capacities structures --refresh"
           color: root.muted
           font.family: Style.font.menuFamily
           font.pixelSize: Style.font.caption

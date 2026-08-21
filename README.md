@@ -83,10 +83,14 @@ Opening the panel is what syncs it, and only if the cache is more than two
 minutes old — so a second monitor's panel doesn't repeat the refresh the first
 one just did. Nothing polls in the background.
 
-**Recent needs a creation time.** The API reports one only for types that carry
-the *Created at* property, and it is not on custom types by default — the panel
-names the ones it had to skip. Add *Created at* to a type in Capacities and it
-starts appearing.
+**Recent needs a creation time.** Capacities tracks when every object was made,
+but only exposes it on types where *Created at* has been enabled in the type's
+settings — which is off by default, on built-in types (Task, Daily Note) as
+well as custom ones. The panel names the types it had to skip. Enable the
+property in Capacities, then tell the plugin to re-read the type list, which it
+otherwise caches for twelve hours:
+
+    omarchy-capacities structures --refresh
 
 **Recent warms up.** List responses carry no timestamps and no ordering, so a
 creation time costs one read per object, capped per sync to stay inside the
