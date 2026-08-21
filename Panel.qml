@@ -263,6 +263,17 @@ Panel {
         // Recent can only hold types that carry a creation time; saying which
         // ones were left out beats a section that looks like it lost things.
         Text {
+          visible: root.cache.recentUnsupported.length > 0
+          width: parent.width
+          text: "No creation time on: " + root.cache.recentUnsupported.join(", ")
+            + " — basic object types cannot be given one."
+          color: root.muted
+          font.family: Style.font.menuFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+        }
+
+        Text {
           visible: root.cache.recentSkipped.length > 0
           width: parent.width
           // The type list is cached for twelve hours, so enabling the property

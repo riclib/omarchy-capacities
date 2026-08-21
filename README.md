@@ -84,13 +84,22 @@ minutes old — so a second monitor's panel doesn't repeat the refresh the first
 one just did. Nothing polls in the background.
 
 **Recent needs a creation time.** Capacities tracks when every object was made,
-but only exposes it on types where *Created at* has been enabled in the type's
-settings — which is off by default, on built-in types (Task, Daily Note) as
-well as custom ones. The panel names the types it had to skip. Enable the
-property in Capacities, then tell the plugin to re-read the type list, which it
-otherwise caches for twelve hours:
+but only exposes it on types where *Created at* is among the type's properties.
+The panel names the types it had to leave out, and there are two kinds:
 
-    omarchy-capacities structures --refresh
+- **A custom type** (Meeting, Idea, Project, your own) can be given the
+  property in its settings. Do that, then tell the plugin to re-read the type
+  list, which it otherwise caches for twelve hours:
+
+      omarchy-capacities structures --refresh
+
+  Objects read before the property existed are re-read rather than trusted, so
+  nothing needs clearing.
+
+- **A basic type** (Task, Daily Note, Tag, Query, AI Chat) cannot — Capacities
+  says as much on the settings screen: *properties of basic object types cannot
+  be edited*. Page, File, PDF and Weblink already ship with one. The rest never
+  will, so the panel says so instead of offering a fix that does not exist.
 
 **Recent warms up.** List responses carry no timestamps and no ordering, so a
 creation time costs one read per object, capped per sync to stay inside the

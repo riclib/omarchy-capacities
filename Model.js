@@ -87,7 +87,8 @@ function parseData(raw) {
     bullets: Array.isArray(today.bullets) ? today.bullets : [],
     tasks: Array.isArray(d.tasks) ? d.tasks : [],
     recent: Array.isArray(d.recent) ? d.recent : [],
-    recentSkipped: Array.isArray(d.recentSkipped) ? d.recentSkipped : []
+    recentSkipped: Array.isArray(d.recentSkipped) ? d.recentSkipped : [],
+    recentUnsupported: Array.isArray(d.recentUnsupported) ? d.recentUnsupported : []
   }
 }
 

@@ -99,3 +99,15 @@ test('shortAge collapses to what fits on a panel row', () => {
   assert.equal(Model.shortAge('', now), '')
   assert.equal(Model.shortAge('not a date', now), '')
 })
+
+test('parseData keeps the two skip lists apart', () => {
+  // A custom type can be given a Created at property; a basic one cannot, and
+  // the panel has to say different things about them.
+  const d = Model.parseData(JSON.stringify({
+    recentSkipped: ['Area'], recentUnsupported: ['Task']
+  }))
+  assert.deepEqual(d.recentSkipped, ['Area'])
+  assert.deepEqual(d.recentUnsupported, ['Task'])
+  const empty = Model.parseData('{}')
+  assert.deepEqual(empty.recentUnsupported, [])
+})

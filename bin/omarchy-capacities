@@ -488,8 +488,16 @@ def _sync_once(args, backfill=0, cap=0):
         labels = {s.get("id"): s.get("title") or "" for s in structures()}
         matched, skipped = structure_ids_by_name(cfg.get("recentStructures") or [])
         # Named in config but unusable — surfaced so the panel can say why a
-        # type never appears, rather than looking broken.
-        data["recentSkipped"] = sorted({name for _id, name in skipped})
+        # type never appears, rather than looking broken. The two cases need
+        # different words: a custom type can be given a Created at property in
+        # its settings, while a basic one ("Properties of basic object types
+        # cannot be edited") never can, and telling someone to go and enable it
+        # sends them to a screen with no such control.
+        fixable, basic = [], []
+        for structure_id, name in skipped:
+            (basic if str(structure_id).startswith(("Root", "Media")) else fixable).append(name)
+        data["recentSkipped"] = sorted(set(fixable))
+        data["recentUnsupported"] = sorted(set(basic))
         # Candidates are scoped to this sync's listings, not to everything the
         # cache has ever seen: objects of a type without a creation time can
         # never place here, and spending reads on them is how Recent stayed
