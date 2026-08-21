@@ -325,7 +325,7 @@ def remember_objects(objects):
     save_json(CACHE_PATH, cache)
 
 
-def object_detail(object_id, known, budget, stale_after=None):
+def object_detail(object_id, known, budget, stale_after=None, needs=None):
     """Return cached detail for an object, spending one request only if the
     budget allows. Returns None when the caller is out of budget — the panel
     shows what is known and fills in on the next sync."""
@@ -334,7 +334,12 @@ def object_detail(object_id, known, budget, stale_after=None):
     # it has a title and nothing else. Treating that as fresh is how "recent"
     # stayed empty forever: nothing was ever stale enough to fetch.
     fetched_at = (entry or {}).get("fetchedAt", 0)
-    fresh_enough = bool(entry) and fetched_at > 0 and (
+    # `needs` names fields the caller cannot do without. An entry read before a
+    # type had its Created at property enabled is cached and complete-looking
+    # but has no creation time, and without this it would never be read again —
+    # so enabling the property in Capacities would appear to change nothing.
+    complete = not needs or all((entry or {}).get(field) for field in needs)
+    fresh_enough = bool(entry) and fetched_at > 0 and complete and (
         stale_after is None or fetched_at + stale_after > time.time()
     )
     if fresh_enough:
@@ -399,9 +404,15 @@ def structure_ids_by_name(names):
 
 
 def cmd_sync(args):
+    spent = _sync_once(args, backfill=int(getattr(args, "backfill", 0) or 0))
+    return 0 if spent >= 0 else 2
+
+
+def _sync_once(args, backfill=0):
+    """One refresh. Returns how many object reads it spent, or -1 on failure."""
     cfg = config()
     previous = load_json(DATA_PATH, {}) or {}
-    if args.max_age and previous.get("syncedAt", 0) + args.max_age > time.time():
+    if getattr(args, "max_age", 0) and previous.get("syncedAt", 0) + args.max_age > time.time():
         return 0
 
     outbox_drain()
@@ -418,13 +429,14 @@ def cmd_sync(args):
                      "tasks": previous.get("tasks", []),
                      "recent": previous.get("recent", [])})
         save_json(DATA_PATH, data, mode=0o644)
-        print(json.dumps({"ok": False, "error": str(error)}))
-        return 2
+        print(json.dumps({"ok": False, "error": str(error)}), file=sys.stderr)
+        return -1
 
     _, known = object_cache()
     budget = {"left": max(0, int(cfg.get("syncTaskDetails", 10)))
                       + max(0, int(cfg.get("syncRecentDetails", 8)))
-                      + max(0, int(getattr(args, "backfill", 0) or 0))}
+                      + max(0, int(backfill))}
+    allowance_start = budget["left"]
 
     # ---- today's note
     try:
@@ -488,9 +500,9 @@ def cmd_sync(args):
                         "structureId": summary.get("structureId") or structure_id,
                         "createdAt": "", "completedAt": "", "date": "", "fetchedAt": 0,
                     }
-        allowance = max(0, int(cfg.get("syncRecentDetails", 8))) + max(0, int(getattr(args, "backfill", 0) or 0))
+        allowance = max(0, int(cfg.get("syncRecentDetails", 8))) + max(0, int(backfill))
         for object_id in [c for c in candidates if not (known.get(c) or {}).get("createdAt")][:allowance]:
-            object_detail(object_id, known, budget)
+            object_detail(object_id, known, budget, needs=("createdAt",))
         seen = set(candidates)
         dated = [o for o in known.values() if o.get("createdAt") and o.get("id") in seen]
         dated.sort(key=lambda o: o["createdAt"], reverse=True)
@@ -506,9 +518,10 @@ def cmd_sync(args):
     remember_objects(known)
     # World-readable on purpose: it holds no credential, and the panel reads it.
     save_json(DATA_PATH, data, mode=0o644)
+    spent = allowance_start - budget["left"]
     print(json.dumps({"ok": True, "tasks": len(data["tasks"]), "recent": len(data["recent"]),
-                      "bullets": len(data["today"]["bullets"]), "spent": budget}))
-    return 0
+                      "bullets": len(data["today"]["bullets"]), "reads": spent}))
+    return spent
 
 
 def outbox_read():
@@ -719,6 +732,37 @@ def cmd_status(args):
     return 0
 
 
+def cmd_warm(args):
+    """Fill Recent by reading objects until there is nothing left to read.
+
+    Creation times are one read each and the quota is thirty a minute, so a
+    space with a few hundred objects cannot be warmed in one go. This paces
+    itself: a round, a wait, another round, until a round finds nothing new or
+    the time budget runs out. Interrupting it is safe — every round writes the
+    cache before sleeping.
+    """
+    rounds = 0
+    deadline = time.time() + max(1, args.minutes) * 60
+    while time.time() < deadline:
+        rounds += 1
+        before = len(load_json(DATA_PATH, {}).get("recent", []) or [])
+        cache_before = len((object_cache()[1] or {}))
+        spent = _sync_once(args, backfill=25)
+        _, known = object_cache()
+        warmed = sum(1 for o in known.values() if o.get("createdAt"))
+        print(json.dumps({"round": rounds, "spent": spent, "withCreatedAt": warmed,
+                          "known": len(known)}), flush=True)
+        if spent == 0:
+            print(json.dumps({"done": True, "rounds": rounds, "withCreatedAt": warmed}))
+            return 0
+        if time.time() + 62 > deadline:
+            break
+        time.sleep(62)
+    print(json.dumps({"done": False, "rounds": rounds,
+                      "note": "time budget reached; run again to continue"}))
+    return 0
+
+
 def cmd_drain(args):
     sent, remaining = outbox_drain(quiet=False)
     print(json.dumps({"sent": sent, "queued": remaining}))
@@ -813,6 +857,10 @@ def main(argv=None):
     sync.add_argument("--backfill", type=int, default=0,
                       help="extra object reads this run, to warm up Recent (rate limit: 30/min)")
     sync.set_defaults(func=cmd_sync)
+
+    warm = sub.add_parser("warm", help="read objects at the quota's pace until Recent is filled")
+    warm.add_argument("--minutes", type=int, default=10, help="how long to keep going")
+    warm.set_defaults(func=cmd_warm, max_age=0, backfill=25)
 
     sub.add_parser("drain").set_defaults(func=cmd_drain)
 

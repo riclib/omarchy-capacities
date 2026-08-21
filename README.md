@@ -95,7 +95,16 @@ otherwise caches for twelve hours:
 **Recent warms up.** List responses carry no timestamps and no ordering, so a
 creation time costs one read per object, capped per sync to stay inside the
 quota. The first syncs show the objects it has read so far, not the true newest.
-`omarchy-capacities sync --backfill 20` spends more in one go.
+To fill it in one sitting:
+
+    omarchy-capacities warm --minutes 10
+
+That reads at the quota's pace — a round, a wait, another round — and stops
+when a round finds nothing new. It is safe to interrupt: every round writes the
+cache before it sleeps. `sync --backfill 20` is the one-shot version.
+
+Enabling *Created at* on a type that was already synced is picked up too: an
+object cached before the property existed is re-read rather than trusted.
 
 ## From a terminal
 
