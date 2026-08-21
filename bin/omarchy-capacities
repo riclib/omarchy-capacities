@@ -408,8 +408,13 @@ def cmd_sync(args):
     return 0 if spent >= 0 else 2
 
 
-def _sync_once(args, backfill=0):
-    """One refresh. Returns how many object reads it spent, or -1 on failure."""
+def _sync_once(args, backfill=0, cap=0):
+    """One refresh. Returns how many object reads it spent, or -1 on failure.
+
+    `cap` is a hard ceiling on object reads for this round. The quota is thirty
+    a minute and the configured allowances are per-section, so without one a
+    space with a long task list plus a backfill can ask for more than a minute
+    allows and spend the overflow collecting 429s."""
     cfg = config()
     previous = load_json(DATA_PATH, {}) or {}
     if getattr(args, "max_age", 0) and previous.get("syncedAt", 0) + args.max_age > time.time():
@@ -436,6 +441,8 @@ def _sync_once(args, backfill=0):
     budget = {"left": max(0, int(cfg.get("syncTaskDetails", 10)))
                       + max(0, int(cfg.get("syncRecentDetails", 8)))
                       + max(0, int(backfill))}
+    if cap:
+        budget["left"] = min(budget["left"], int(cap))
     allowance_start = budget["left"]
 
     # ---- today's note
@@ -747,7 +754,9 @@ def cmd_warm(args):
         rounds += 1
         before = len(load_json(DATA_PATH, {}).get("recent", []) or [])
         cache_before = len((object_cache()[1] or {}))
-        spent = _sync_once(args, backfill=25)
+        # Twenty-five leaves the minute's remaining five for the listings and
+        # the daily note, which are separate endpoints but not free.
+        spent = _sync_once(args, backfill=25, cap=25)
         _, known = object_cache()
         warmed = sum(1 for o in known.values() if o.get("createdAt"))
         print(json.dumps({"round": rounds, "spent": spent, "withCreatedAt": warmed,
