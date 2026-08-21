@@ -23,6 +23,12 @@ Then connect it to a space. Generate a token in the Capacities desktop app
 
 A token is bound to one space, which is how this knows where captures go.
 
+**What it needs:** Omarchy's Quickshell shell, and Python 3 — standard library
+only, no pip. `wl-clipboard` if you want *Save clipboard link* (Omarchy ships
+it). The Capacities desktop app if you want rows to open in it rather than the
+browser; without it, set `"openIn": "web"`. `node` is for the tests, not for
+running the plugin.
+
 On first load the plugin writes `~/.config/omarchy-capacities/config.json`,
 puts `omarchy-capacities` on your PATH, and adds a **Capacities** section to
 the Omarchy menu under *Trigger*. It takes no keybinding — a key is yours to
@@ -188,7 +194,8 @@ considers, and any of them without a *Created at* property is skipped.
     Model.js         parsing and index arithmetic — plain JS, tested with node
     bin/omarchy-capacities   the API client: token, outbox, structure cache
     bin/capacities-setup     first-load setup — config, menu rows, PATH
-    bin/capacities-bind-key  the shortcut, when you ask for it
+    bin/capacities-bind-key  the shortcuts, when you ask for them
+    bin/capacities-uninstall take back everything setup added
 
 ### The daily-note endpoint
 
@@ -215,6 +222,31 @@ space's structure list wants a cache so a search doesn't spend one of its
 ten-per-minute space reads relabelling rows. All three are ordinary in Python
 and miserable in QML.
 
+## What it writes, and taking it back
+
+Everything outside the plugin's own directory is either a marked block or a
+symlink it made, so removal is exact:
+
+| Path | What |
+| --- | --- |
+| `~/.config/omarchy-capacities/config.json` | written once, only if absent |
+| `~/.local/state/omarchy/capacities/` | token (0600), outbox, caches |
+| `~/.config/omarchy/extensions/omarchy-menu.jsonc` | a marked block of menu rows |
+| `~/.local/bin/` | symlinks for the three commands |
+| `~/.config/hypr/bindings.lua` | a marked block — **only** if you ask for it |
+
+It takes no keybinding on its own, and it never rewrites a file wholesale: an
+existing config is left alone, and a command name that is not our symlink stays
+where it is.
+
+To remove it:
+
+    capacities-uninstall            # menu rows, keybindings, commands
+    capacities-uninstall --purge    # …and the config, caches and token
+    omarchy plugin remove riclib.capacities
+
+Your notes are never involved — they live in Capacities.
+
 ## Rate limits
 
 Capacities' quotas are small and per-endpoint: 10/60s for space reads, 30/60s
@@ -225,7 +257,7 @@ hours.
 ## Tests
 
     node --test tests/model.test.js    # parsing, wrapping selection, ages, elision
-    tests/cli.test.sh                  # the offline queue, token file mode
+    tests/cli.test.sh                  # the offline queue, token mode, uninstall
 
 Both run without a network or a token.
 

@@ -51,6 +51,47 @@ check "token file is 0600" "$(stat -c '%a' "$XDG_STATE_HOME/omarchy/capacities/t
 "$CLI" logout >/dev/null 2>&1
 check "logout removes the token file" "$([[ -e $XDG_STATE_HOME/omarchy/capacities/token ]] && echo yes || echo no)" "no"
 
+
+# --- uninstall -----------------------------------------------------------
+# Everything setup writes outside the plugin lives in a marked block or is a
+# symlink it made. Removal has to take exactly those and nothing beside them.
+fake="$sandbox/home"
+mkdir -p "$fake/.config/omarchy/extensions" "$fake/.config/hypr" "$fake/.local/bin"
+cat > "$fake/.config/omarchy/extensions/omarchy-menu.jsonc" <<'MENU'
+{
+  "trigger.keep-me": { "label": "Not ours" },
+  // >>> capacities menu >>>
+  "trigger.capacities": { "label": "Capacities" },
+  // <<< capacities menu <<<
+  "trigger.also-keep": { "label": "Also not ours" }
+}
+MENU
+cat > "$fake/.config/hypr/bindings.lua" <<'BINDS'
+o.bind("SUPER + T", "Terminal", "ghostty")
+-- >>> capacities >>>
+o.bind("SUPER + M", "Capture", "x")
+-- <<< capacities <<<
+o.bind("SUPER + Q", "Close", "z")
+BINDS
+ln -s "$CLI" "$fake/.local/bin/omarchy-capacities"
+printf '#!/bin/sh\n' > "$fake/.local/bin/capacities-bind-key"   # someone else's file
+
+HOME="$fake" XDG_CONFIG_HOME="$fake/.config" XDG_STATE_HOME="$fake/.local/state" \
+  "$HERE/../bin/capacities-uninstall" --yes >/dev/null 2>&1
+
+check "menu keeps what was not ours" \
+  "$(grep -ci 'not ours' "$fake/.config/omarchy/extensions/omarchy-menu.jsonc")" "2"
+check "menu loses our block" \
+  "$(grep -c 'trigger.capacities' "$fake/.config/omarchy/extensions/omarchy-menu.jsonc")" "0"
+check "bindings keep what was not ours" \
+  "$(grep -c 'SUPER + T\|SUPER + Q' "$fake/.config/hypr/bindings.lua")" "2"
+check "bindings lose our block" \
+  "$(grep -c 'SUPER + M' "$fake/.config/hypr/bindings.lua")" "0"
+check "our symlink is removed" \
+  "$([[ -e $fake/.local/bin/omarchy-capacities ]] && echo yes || echo no)" "no"
+check "a file that is not ours survives" \
+  "$([[ -f $fake/.local/bin/capacities-bind-key ]] && echo yes || echo no)" "yes"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

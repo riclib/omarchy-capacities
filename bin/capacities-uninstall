@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# capacities-uninstall — take back everything setup added, then remove the
+# plugin. Usage: capacities-uninstall [--purge] [--yes]
+#
+# Everything this plugin writes outside its own directory sits in a marked
+# block or is a symlink it made, so removal is exact: no file is rewritten
+# wholesale and nothing that was not ours is touched. Your notes are never
+# involved — they live in Capacities.
+set -euo pipefail
+
+PURGE=false
+ASSUME_YES=false
+for arg in "$@"; do
+  case "$arg" in
+    --purge) PURGE=true ;;
+    --yes|-y) ASSUME_YES=true ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+BINDINGS="$HOME/.config/hypr/bindings.lua"
+BIN_DIR="${CAPACITIES_BIN_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-capacities"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/capacities"
+
+if [[ $ASSUME_YES != true ]]; then
+  echo "This removes the Capacities menu rows, keybindings and commands."
+  $PURGE && echo "It also deletes $CONFIG_DIR and $STATE_DIR (including your API token)."
+  read -r -p "Continue? [y/N] " answer
+  [[ ${answer,,} == y* ]] || { echo "Nothing was changed."; exit 0; }
+fi
+
+# Marked blocks, cut out by their own fences. Backed up first, because a
+# botched edit to bindings.lua costs someone their whole keyboard.
+drop_block() {
+  local file="$1" start="$2" end="$3"
+  [[ -f $file ]] || return 0
+  grep -q "$start" "$file" || return 0
+  cp "$file" "$file.bak.$(date +%s)"
+  awk -v s="$start" -v e="$end" '
+    index($0, s) { skip = 1 }
+    !skip { print }
+    index($0, e) { skip = 0 }
+  ' "$file" >"$file.tmp" && mv "$file.tmp" "$file"
+  echo "removed the marked block from $file"
+}
+
+drop_block "$MENU" '>>> capacities menu >>>' '<<< capacities menu <<<'
+drop_block "$BINDINGS" '>>> capacities >>>' '<<< capacities <<<'
+
+# Only ever remove a symlink we made. A real file with that name is someone
+# else's, and stays.
+for cmd in omarchy-capacities capacities-bind-key capacities-uninstall; do
+  target="$BIN_DIR/$cmd"
+  if [[ -L $target ]]; then
+    rm -f "$target"
+    echo "removed $target"
+  elif [[ -e $target ]]; then
+    echo "left $target alone — it is not our symlink"
+  fi
+done
+
+if $PURGE; then
+  rm -rf "$CONFIG_DIR" "$STATE_DIR"
+  echo "deleted $CONFIG_DIR and $STATE_DIR"
+else
+  echo "kept your config and token; --purge deletes them"
+fi
+
+command -v hyprctl >/dev/null 2>&1 && hyprctl reload >/dev/null 2>&1 || true
+
+echo
+echo "Now remove the plugin itself:"
+echo "  omarchy plugin remove riclib.capacities"

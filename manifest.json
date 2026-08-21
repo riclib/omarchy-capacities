@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "riclib.capacities",
   "name": "Capacities",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Ricardo Liberato",
   "license": "MIT",
   "description": "Capture to today's daily note and search your space — without leaving the desktop",

@@ -33,7 +33,7 @@ fi
 # --- The CLI, on your PATH ---------------------------------------------------
 # A file that isn't our symlink is something you put there, and it stays yours.
 BIN_DIR="${CAPACITIES_BIN_DIR:-$HOME/.local/bin}"
-for cmd in omarchy-capacities capacities-bind-key; do
+for cmd in omarchy-capacities capacities-bind-key capacities-uninstall; do
   if [[ -e $BIN_DIR/$cmd && ! -L $BIN_DIR/$cmd ]]; then
     echo "capacities: $BIN_DIR/$cmd is not our symlink — left it alone"
   elif ! { mkdir -p "$BIN_DIR" && ln -sfn "$PLUGIN_DIR/bin/$cmd" "$BIN_DIR/$cmd"; } 2>/dev/null; then
