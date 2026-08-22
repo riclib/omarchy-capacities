@@ -20,9 +20,12 @@ marketplace like anyone else's.
 The loop is therefore: edit here → commit → push → update the installed copy:
 
 ```bash
-omarchy plugin update riclib.capacities   # pulls origin into the installed clone
-omarchy restart shell                     # see the gotcha about caching below
+omarchy plugin update riclib.capacities --yes   # pulls origin into the installed clone
+omarchy restart shell                           # see the gotcha about caching below
 ```
+
+Without `--yes` it prints the incoming diff and waits for a keypress, which
+hangs an agent.
 
 For a fast inner loop while iterating on QML, edit the installed copy directly
 (it hot-reloads), then port the change back here and delete it there before
