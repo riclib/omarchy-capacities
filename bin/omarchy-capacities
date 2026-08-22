@@ -60,6 +60,24 @@ CACHE_PATH = os.path.join(STATE_DIR, "cache.json")
 # endpoint that serves them is on the tightest quota of the lot (10/60s).
 CACHE_TTL = 12 * 3600
 
+# A response is read up to these and no further. Nothing this client asks for
+# is large — the biggest is one object with its blocks — and an answer past the
+# cap is not a big page, it is an endpoint that is lying about what it is. The
+# shell runs this, so an unbounded read is the shell's memory.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+
+# Longest string this hands to the UI. Titles and note lines are display text;
+# past a few hundred characters they are elided on screen anyway, and the only
+# thing a longer one can still do is cost the shell memory to lay out.
+MAX_DISPLAY_CHARS = 400
+
+
+def clamp(value, limit=MAX_DISPLAY_CHARS):
+    """Bound a string that came from the API before it reaches the UI."""
+    text = str(value or "")
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
 DEFAULT_CONFIG = {
     # A capture is a bullet in the day's list, not a paragraph under a clock.
     "template": "- {text}",
@@ -167,20 +185,29 @@ def request(method, path, body=None, timeout=20):
     req = urllib.request.Request(API + path, data=payload, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8") or "{}"
+            # One byte past the cap is enough to know it was exceeded, and is
+            # all that is ever held beyond it.
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise CapacitiesError(
+                    "Capacities sent more than %d MB for %s; refusing it."
+                    % (MAX_RESPONSE_BYTES // (1024 * 1024), path.split("?")[0]),
+                    transient=True,
+                )
+            raw = body.decode("utf-8", "replace") or "{}"
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as error:
         raw = ""
         try:
-            raw = error.read().decode("utf-8")
+            raw = error.read(MAX_ERROR_BYTES + 1).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001 - the body is a nicety, not the verdict
             pass
         detail = ""
         try:
             parsed = json.loads(raw)
-            detail = parsed.get("message") or parsed.get("code") or ""
+            detail = clamp(parsed.get("message") or parsed.get("code") or "", 200)
         except ValueError:
-            detail = raw[:200]
+            detail = clamp(raw, 200)
 
         if error.code == 429:
             reset = error.headers.get("ratelimit") or ""
@@ -309,7 +336,7 @@ def block_lines(blocks, depth=0, out=None):
     for block in blocks or []:
         text = "".join(t.get("text") or "" for t in (block.get("tokens") or [])).strip()
         if text:
-            out.append({"id": block.get("id", ""), "text": text, "depth": depth})
+            out.append({"id": block.get("id", ""), "text": clamp(text), "depth": depth})
         block_lines(block.get("blocks") or [], depth + 1, out)
     return out
 
@@ -362,7 +389,7 @@ def object_detail(object_id, known, budget, stale_after=None, needs=None):
 
     detail = {
         "id": object_id,
-        "title": value("title", "title").get("value") or "",
+        "title": clamp(value("title", "title").get("value") or ""),
         "structureId": obj.get("structureId", ""),
         "createdAt": value("createdAt", "createdAt").get("value") or "",
         # A task is open until it has a completion date. The status label is
@@ -474,7 +501,8 @@ def _sync_once(args, backfill=0, cap=0):
             title = detail.get("title") or summary.get("title") or ""
             if not title.strip() or detail.get("completedAt"):
                 continue
-            open_tasks.append({"id": detail["id"], "title": title, "date": detail.get("date", "")})
+            open_tasks.append({"id": detail["id"], "title": clamp(title),
+                               "date": clamp(detail.get("date", ""), 40)})
         # Dated work first, then the rest — a deadline is the only ordering
         # signal the API gives us.
         open_tasks.sort(key=lambda t: (t["date"] == "", t["date"]))
@@ -522,8 +550,9 @@ def _sync_once(args, backfill=0, cap=0):
         dated = [o for o in known.values() if o.get("createdAt") and o.get("id") in seen]
         dated.sort(key=lambda o: o["createdAt"], reverse=True)
         data["recent"] = [
-            {"id": o["id"], "title": o.get("title") or "Untitled",
-             "structure": labels.get(o.get("structureId"), ""), "createdAt": o["createdAt"]}
+            {"id": o["id"], "title": clamp(o.get("title") or "Untitled"),
+             "structure": clamp(labels.get(o.get("structureId"), ""), 60),
+             "createdAt": clamp(o["createdAt"], 40)}
             for o in dated[: max(1, int(cfg.get("recentLimit", 8)))]
         ]
     except CapacitiesError as error:
@@ -692,9 +721,9 @@ def cmd_search(args):
         results.append(
             {
                 "id": object_id,
-                "title": item.get("title") or "Untitled",
+                "title": clamp(item.get("title") or "Untitled"),
                 "structureId": item.get("structureId", ""),
-                "structure": labels.get(item.get("structureId"), ""),
+                "structure": clamp(labels.get(item.get("structureId"), ""), 60),
                 "app": "capacities://%s/%s" % (space_id, object_id),
                 "web": "https://app.capacities.io/%s/%s" % (space_id, object_id),
             }

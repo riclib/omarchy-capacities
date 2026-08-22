@@ -249,6 +249,21 @@ To remove it:
 
 Your notes are never involved — they live in Capacities.
 
+## Treating the API as untrusted
+
+The shell is a long-lived process shared by every widget on the bar, so a
+compromised or misbehaving endpoint must not be able to spend its memory or
+make it fetch anything:
+
+- Responses are read up to a cap (8 MB, and 64 KB for error bodies) and
+  refused past it, rather than buffered to whatever length the server likes.
+- Strings bound for the UI are clamped before they are written to the cache.
+- Every `Text` in this plugin sets `textFormat: Text.PlainText`. Qt's default
+  is `AutoText`, which guesses rich text — and rich text loads resources. No
+  API-derived string should ever get to decide that.
+
+The tests cover the first two against a server that floods the connection.
+
 ## Rate limits
 
 Capacities' quotas are small and per-endpoint: 10/60s for space reads, 30/60s

@@ -92,6 +92,56 @@ check "our symlink is removed" \
 check "a file that is not ours survives" \
   "$([[ -f $fake/.local/bin/capacities-bind-key ]] && echo yes || echo no)" "yes"
 
+# --- hostile endpoint ----------------------------------------------------
+# The shell runs this client, so an unbounded read is the shell's memory. A
+# server that answers with more than the cap must be refused rather than
+# buffered, and refusing must not look like success.
+python3 - "$sandbox" <<'PY' &
+import http.server, socketserver, sys, threading
+class Flood(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        chunk = b"x" * (1024 * 1024)
+        try:
+            self.wfile.write(b'{"padding":"')
+            for _ in range(12):          # 12 MB, past the 8 MB cap
+                self.wfile.write(chunk)
+            self.wfile.write(b'"}')
+        except BrokenPipeError:
+            pass                          # the client hung up: that is the point
+    def log_message(self, *a): pass
+class Quiet(socketserver.TCPServer):
+    allow_reuse_address = True
+    # The client hanging up mid-flood is the result under test, not a fault.
+    def handle_error(self, request, client_address): pass
+with Quiet(("127.0.0.1", 8731), Flood) as httpd:
+    open(sys.argv[1] + "/server.ready", "w").close()
+    httpd.serve_forever()
+PY
+server_pid=$!
+for _ in $(seq 1 50); do [[ -e $sandbox/server.ready ]] && break; sleep 0.1; done
+
+flood_out="$(CAPACITIES_API=http://127.0.0.1:8731 "$CLI" space --refresh 2>&1)"; flood_code=$?
+kill "$server_pid" 2>/dev/null || true
+
+check "an oversized response is refused" "$flood_code" "2"
+check "and says so rather than half-parsing" \
+  "$(printf '%s' "$flood_out" | grep -qi 'more than' && echo said || echo silent)" "said"
+
+# Display strings are bounded before they reach the shell's text layout.
+long_title="$(python3 -c "print('A' * 5000)")"
+clamped="$(python3 - "$HERE/../bin/omarchy-capacities" "$long_title" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("cap", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cap", loader))
+loader.exec_module(m)
+print(len(m.clamp(sys.argv[2])))
+PY
+)"
+check "a 5000-character title is clamped" "$clamped" "400"
+
 echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

@@ -297,6 +297,7 @@ Item {
             spacing: Style.space(8)
 
             Text {
+              textFormat: Text.PlainText   // never AutoText: this can hold API text
               anchors.verticalCenter: parent.verticalCenter
               // nf-md-lightbulb_outline — the space's own icon is a lightbulb.
               text: root.isSearch ? "󰅉" : "󰔏"
@@ -307,6 +308,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText   // never AutoText: this can hold API text
               anchors.verticalCenter: parent.verticalCenter
               text: root.tokenMissing
                 ? "Capacities — not connected"
@@ -376,6 +378,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText   // never AutoText: this can hold API text
                   id: structureLabel
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.structure
@@ -397,6 +400,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText   // never AutoText: this can hold API text
             id: footer
             width: parent.width
             color: root.foreground

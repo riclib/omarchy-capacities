@@ -138,6 +138,7 @@ Panel {
             spacing: Style.space(1)
 
             Text {
+              textFormat: Text.PlainText   // never AutoText: this can hold API text
               text: root.cache.space || "Capacities"
               color: root.fg
               font.family: Style.font.menuFamily
@@ -145,6 +146,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText   // never AutoText: this can hold API text
               text: root.cache.authRequired
                 ? "not connected — omarchy-capacities login"
                 : (root.cache.error
@@ -192,6 +194,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText   // never AutoText: this can hold API text
           visible: !root.hasToday
           width: parent.width
           text: root.cache.authRequired ? "Connect a token to see today's note."
@@ -263,6 +266,7 @@ Panel {
         // Recent can only hold types that carry a creation time; saying which
         // ones were left out beats a section that looks like it lost things.
         Text {
+          textFormat: Text.PlainText   // never AutoText: this can hold API text
           visible: root.cache.recentUnsupported.length > 0
           width: parent.width
           text: "No creation time on: " + root.cache.recentUnsupported.join(", ")
@@ -274,6 +278,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText   // never AutoText: this can hold API text
           visible: root.cache.recentSkipped.length > 0
           width: parent.width
           // The type list is cached for twelve hours, so enabling the property

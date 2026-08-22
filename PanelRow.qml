@@ -42,6 +42,7 @@ Item {
   }
 
   Text {
+    textFormat: Text.PlainText   // never AutoText: this can hold API text
     id: trailingText
     anchors.right: parent.right
     anchors.rightMargin: Style.space(6)
